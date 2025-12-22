@@ -5,28 +5,42 @@
   <title>Weather Stations</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
-
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body { height: 100%; margin: 0; }
-    #controls { padding: 8px; }
-    #map { height: calc(100% - 44px); }
-    input { width: 80%; padding: 6px; }
+    #controls {
+      position: absolute;
+      top: 10px; left: 10px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.9);
+      padding: 8px 10px;
+      border-radius: 6px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+      font-family: system-ui, sans-serif;
+      font-size: 14px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    #map { height: 100%; }
     button { padding: 6px 10px; }
+    #timeLabel { white-space: nowrap; }
   </style>
 </head>
 <body>
 
+<div id="controls">
+  <button id="prevBtn">◀ Earlier</button>
+  <button id="nextBtn">Later ▶</button>
+  <span id="timeLabel"></span>
+  <span id="status"></span>
+</div>
+
 <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
 <script>
   const map = L.map("map").setView([0, 0], 2);
-
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "© OpenStreetMap contributors",
     maxZoom: 19
@@ -34,11 +48,42 @@
 
   const layer = L.layerGroup().addTo(map);
 
-  loadData();
+  const startX = 1879;
+  const startY = 1226;
 
-  function fToC(f) {
-    return (f - 32) * 5 / 9;
-  }
+  const NAV_STEP_MIN = 5;
+  const NAV_STEP_MS = NAV_STEP_MIN * 60 * 1000;
+
+  const REQ_WINDOW_MIN = 15;
+  const REQ_WINDOW_MS = REQ_WINDOW_MIN * 60 * 1000;
+
+  const MAX_BACK_MIN = 60;
+  const MAX_BACK_STEPS = MAX_BACK_MIN / NAV_STEP_MIN; // 12 steps
+
+  let navStepBack = 0; // 0 = now-ish, 1 = 5 min earlier, etc.
+  let isLoading = false;
+
+  // cache requests by "start-end"
+  const cache = new Map();
+
+  const prevBtn = document.getElementById("prevBtn");
+  const nextBtn = document.getElementById("nextBtn");
+  const timeLabel = document.getElementById("timeLabel");
+  const statusEl = document.getElementById("status");
+
+  prevBtn.addEventListener("click", () => {
+    navStepBack = Math.min(MAX_BACK_STEPS, navStepBack + 1);
+    loadData();
+  });
+
+  nextBtn.addEventListener("click", () => {
+    navStepBack = Math.max(0, navStepBack - 1);
+    loadData();
+  });
+
+  function setStatus(s) { statusEl.textContent = s || ""; }
+
+  function fToC(f) { return (f - 32) * 5 / 9; }
 
   function getLatLon(feature) {
     const c = feature?.geometry?.coordinates;
@@ -49,75 +94,137 @@
   // Linear gradient from blue (15°C) to red (30°C)
   function tempToColor(tempC) {
     if (tempC === null) return "#888";
-
-    const tMin = 15;
-    const tMax = 30;
-
-    // clamp outside range
+    const tMin = 15, tMax = 30;
     const t = Math.min(tMax, Math.max(tMin, tempC));
-    const f = (t - tMin) / (tMax - tMin); // 0..1
-
+    const f = (t - tMin) / (tMax - tMin);
     const r = Math.round(255 * f);
     const g = Math.round(64 * (1 - f));
     const b = Math.round(255 * (1 - f));
-
     return `rgb(${r},${g},${b})`;
   }
 
-  async function loadData() {
-
-    layer.clearLayers();
-
-
-    const features = await getData();
-    const points = [];
-
-    for (const f of features) {
-      const ll = getLatLon(f);
-      if (!ll) continue;
-
-      const p = f.properties || {};
-      const tempC = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
-      const hum   = (typeof p.humidity === "number") ? p.humidity : null;
-
-      L.circleMarker(ll, {
-        radius: 9,
-        fillColor: tempToColor(tempC),
-        color: "#000",
-        weight: 1,
-        fillOpacity: 0.85
-      })
-      .bindPopup(
-        `<strong>${p.neighborhood ?? "Station"}</strong><br>
-         Temp: ${tempC !== null ? tempC.toFixed(1) : "—"} °C<br>
-         Humidity: ${hum !== null ? hum : "—"} %`
-      )
-      .addTo(layer);
-
-      points.push(ll);
-    }
-
-    if (points.length) {
-      map.fitBounds(points, { padding: [20, 20] });
-    }
+  function fmtLocal(ms) {
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const da = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${y}-${mo}-${da} ${hh}:${mm}`;
   }
 
-  async function getData(){
-    const startX = 1879;
-    const startY = 1226;
+  // floor to 15-min boundary (00/15/30/45)
+  function floorToQuarterHourMs(tMs) {
+    const d = new Date(tMs);
+    d.setSeconds(0, 0);
+    const m = d.getMinutes();
+    d.setMinutes(m - (m % 15));
+    return d.getTime();
+  }
+
+  // Given a "view time" (ms), pick the 15-min request bucket [start,end)
+  function requestWindowForViewTime(viewMs) {
+    const end = floorToQuarterHourMs(viewMs);   // bucket end at quarter-hour
+    const start = end - REQ_WINDOW_MS;
+    return [start, end];
+  }
+
+  // Pull only features that are valid for the current 5-min view time
+  function filterFeaturesForViewTime(features, viewMs) {
+    const viewBucketStart = viewMs - NAV_STEP_MS; // show the previous 5 minutes
+    return features.filter(f => {
+      const vt = f?.properties?.validTime;
+      const validity = f?.properties?.validity; // seems to be 900000 (15m)
+      if (typeof vt !== "number") return true; // if missing, just keep it
+      if (typeof validity !== "number") return true;
+      return (vt <= viewBucketStart) && (viewBucketStart < (vt + validity));
+    });
+  }
+
+  async function fetchFeatures(startMs, endMs) {
+    const key = `${startMs}-${endMs}`;
+    if (cache.has(key)) return cache.get(key);
 
     let features = [];
+    for (let x = startX; x <= startX + 2; x++) {
+      for (let y = startY; y <= startY + 2; y++) {
+        const url =
+          `https://api.weather.com/v2/vector-api/products/614/features` +
+          `?x=${x}&y=${y}&lod=12&apiKey=e1f10a1e78da46f5b10a1e78da96f525` +
+          `&tile-size=512&time=${startMs}-${endMs}`;
 
-    for(x=startX; x<=startX+2; x++){
-      for(y=startY; y<=startY+2; y++){
-        const url = `https://api.weather.com/v2/vector-api/products/614/features?x=${x}&y=${y}&lod=12&apiKey=e1f10a1e78da46f5b10a1e78da96f525&tile-size=512&time=1766398500000-1766399400000`;
         const res = await fetch(url);
         const data = await res.json();
         features = features.concat(data.features);
       }
     }
+    cache.set(key, features);
     return features;
   }
+
+  async function loadData() {
+    if (isLoading) return;
+    isLoading = true;
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+
+    // "view time" moves in 5-min steps
+    const nowMs = Date.now();
+    const viewMs = nowMs - navStepBack * NAV_STEP_MS;
+
+    // but requests are always 15-min buckets
+    const [reqStart, reqEnd] = requestWindowForViewTime(viewMs);
+
+    timeLabel.textContent =
+      `View: ${fmtLocal(viewMs)} | Request: ${fmtLocal(reqStart)} → ${fmtLocal(reqEnd)}`;
+
+    try {
+      setStatus("Loading…");
+      const allFeatures = await fetchFeatures(reqStart, reqEnd);
+      const features = filterFeaturesForViewTime(allFeatures, viewMs);
+
+      layer.clearLayers();
+      const points = [];
+
+      for (const f of features) {
+        const ll = getLatLon(f);
+        if (!ll) continue;
+
+        const p = f.properties || {};
+        const tempC = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
+        const hum   = (typeof p.humidity === "number") ? p.humidity : null;
+
+        L.circleMarker(ll, {
+          radius: 9,
+          fillColor: tempToColor(tempC),
+          color: "#000",
+          weight: 1,
+          fillOpacity: 0.85
+        })
+        .bindPopup(
+          `<strong>${p.neighborhood ?? "Station"}</strong><br>
+           Temp: ${tempC !== null ? tempC.toFixed(1) : "—"} °C<br>
+           Humidity: ${hum !== null ? hum : "—"} %<br>
+           validTime: ${typeof p.validTime === "number" ? fmtLocal(p.validTime) : "—"}`
+        )
+        .addTo(layer);
+
+        points.push(ll);
+      }
+
+      if (points.length) map.fitBounds(points, { padding: [-70, -70] });
+      setStatus(`features: ${features.length} (bucket had ${allFeatures.length})`);
+    } catch (e) {
+      console.error(e);
+      setStatus(`Error: ${e.message}`);
+    } finally {
+      isLoading = false;
+      nextBtn.disabled = (navStepBack === 0);
+      prevBtn.disabled = (navStepBack === MAX_BACK_STEPS);
+    }
+  }
+
+  loadData();
 </script>
 
 </body>
