@@ -57,13 +57,10 @@
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "© OpenStreetMap contributors",
-    maxZoom: 19
+    maxZoom: 17
   }).addTo(map);
 
   const layer = L.layerGroup().addTo(map);
-
-  const startX = 1878;
-  const startY = 1226;
 
   const WINDOW_MS = 15 * 60 * 1000;
   const cache = new Map();
@@ -89,6 +86,14 @@
     const c = f?.geometry?.coordinates;
     if (!Array.isArray(c) || c.length < 2) return null;
     return [c[1], c[0]];
+  }
+
+  function ageToOpacity(validTimeMs) {
+    if (typeof validTimeMs !== "number") return 0;
+    const ageMs = Date.now() - validTimeMs;
+    const maxAge = 30 * 60 * 1000; // 30 min
+    const clamped = Math.min(maxAge, Math.max(0, ageMs));
+    return 1 - (clamped / maxAge); // 0 min => 1, 30 min => 0
   }
 
   // ---- OUTLIER REMOVAL (std dev) ----
@@ -180,16 +185,17 @@
     return d.getTime();
   }
 
-  async function fetchFeatures(startMs, endMs) {
-    const key = `${startMs}-${endMs}`;
+  // ---- Multi-resolution tile fetching ----
+  async function fetchFeaturesForGrid(startMs, endMs, { startX, startY, tilesX, tilesY, lod }) {
+    const key = `${startMs}-${endMs}:${startX},${startY},${tilesX},${tilesY},lod${lod}`;
     if (cache.has(key)) return cache.get(key);
 
     let features = [];
-    for (let x = startX; x <= startX + 3; x++) {
-      for (let y = startY; y <= startY + 2; y++) {
+    for (let x = startX; x <= startX + tilesX; x++) {
+      for (let y = startY; y <= startY + tilesY; y++) {
         const url =
           `https://api.weather.com/v2/vector-api/products/614/features` +
-          `?x=${x}&y=${y}&lod=12&apiKey=e1f10a1e78da46f5b10a1e78da96f525` +
+          `?x=${x}&y=${y}&lod=${lod}&apiKey=e1f10a1e78da46f5b10a1e78da96f525` +
           `&tile-size=512&time=${startMs}-${endMs}`;
 
         const r = await fetch(url);
@@ -197,8 +203,26 @@
         features = features.concat(j.features);
       }
     }
+
     cache.set(key, features);
     return features;
+  }
+
+  async function fetchFeaturesMerged(startMs, endMs) {
+    // central high detail
+    const centerReq = { startX: 1879, startY: 1226, tilesX: 1, tilesY: 1, lod: 12 };
+    
+    // wider low detail
+    //const wideReq   = { startX: 469,  startY: 306,  tilesX: 1, tilesY: 1, lod: 10 };
+
+    const wideReq   = { startX: 939,  startY: 613,  tilesX: 1, tilesY: 1, lod: 11 };
+
+    const [center, wide] = await Promise.all([
+      fetchFeaturesForGrid(startMs, endMs, centerReq),
+      fetchFeaturesForGrid(startMs, endMs, wideReq),
+    ]);
+
+    return center.concat(wide);
   }
 
   function mostRecentPerStation(features, startMs, endMs) {
@@ -222,14 +246,24 @@
   }
 
   async function loadData() {
-    const end = floorToQuarterHour(Date.now());
-    const start = end - WINDOW_MS;
+    const start = floorToQuarterHour(Date.now());
+    const end = start + WINDOW_MS;
 
-    const bucket = await fetchFeatures(start, end);
-    const latest = mostRecentPerStation(bucket, start, end);
+    const prevStart = start - WINDOW_MS;
+    const prevEnd = start;
 
-    // remove outliers (temp + humidity) before computing min/max + drawing
-    const features = filterOutliersByStd(latest);
+    // fetch both 15-min blocks, each from both resolutions
+    const [bucketPrev, bucketNow] = await Promise.all([
+      fetchFeaturesMerged(prevStart, prevEnd),
+      fetchFeaturesMerged(start, end)
+    ]);
+
+    // combine and then keep only the most recent per station across 30 mins
+    const combined = bucketPrev.concat(bucketNow);
+    const latest30 = mostRecentPerStation(combined, prevStart, end);
+
+    // remove outliers using the combined/latest set
+    const features = filterOutliersByStd(latest30);
 
     computeRanges(features);
 
@@ -247,12 +281,15 @@
       const fillColor =
         (colorMode === "humidity") ? humidityToColor(h) : tempToColor(t);
 
+      const op = ageToOpacity(p.validTime);
+      if (op <= 0) continue;
+
       L.circleMarker(ll, {
         radius: 9,
         fillColor,
         color: "#000",
         weight: 0,
-        fillOpacity: 0.85
+        fillOpacity: op
       })
       .bindPopup(
         `<strong>${p.neighborhood ?? f.id}</strong><br>
