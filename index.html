@@ -57,7 +57,6 @@
     }
 
     .spinner.hidden { display: none; }
-
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -68,12 +67,13 @@
 
 <div id="controls">
   <button id="qBtn" class="modeBtn selected">Spec. humidity</button>
-  <button id="humBtn" class="modeBtn">Humidity</button>
+  <button id="humBtn" class="modeBtn">Rel. humidity</button>
   <button id="tempBtn" class="modeBtn">Temp</button>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+  // ---- MAP ----
   const map = L.map("map").setView([-33.645239, 150.556535], 11);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -83,18 +83,16 @@
 
   const layer = L.layerGroup().addTo(map);
 
+  // ---- UI ----
   const spinner = document.getElementById("spinner");
   function showSpinner() { spinner.classList.remove("hidden"); }
   function hideSpinner() { spinner.classList.add("hidden"); }
 
-  const WINDOW_MS = 15 * 60 * 1000;
-  const cache = new Map();
-
-  let colorMode = "q"; // "q" | "humidity" | "temp"
-
   const qBtn = document.getElementById("qBtn");
   const humBtn = document.getElementById("humBtn");
   const tempBtn = document.getElementById("tempBtn");
+
+  let colorMode = "q"; // "q" | "humidity" | "temp"
 
   function setMode(mode) {
     colorMode = mode;
@@ -108,6 +106,19 @@
   humBtn.onclick = () => setMode("humidity");
   tempBtn.onclick = () => setMode("temp");
 
+  // ---- CONSTANTS ----
+  const WINDOW_MS = 15 * 60 * 1000;
+  const cache = new Map();
+
+  // median-centered ranges
+  const TEMP_RANGE_C = 10;     // total span
+  const HUM_RANGE_PCT = 20;    // total span
+  const Q_RANGE_GKG = 5;       // total span
+
+  // outlier filtering
+  const OUTLIER_K = 2.5;
+
+  // ---- MATH / HELPERS ----
   function fToC(f) { return (f - 32) * 5 / 9; }
 
   function inHgToHpa(inHg) {
@@ -131,20 +142,47 @@
     if (typeof validTimeMs !== "number") return 0;
     const ageMs = Date.now() - validTimeMs;
     const maxAge = 30 * 60 * 1000;
-    return Math.max(0, 1 - ageMs / maxAge);
+    const f = 1 - (ageMs / maxAge);
+    return Math.max(0, Math.min(1, f));
   }
 
-  // ---- OUTLIER REMOVAL (std dev) ----
-  const OUTLIER_K = 2.5;
+  function floorToQuarterHour(ms) {
+    const d = new Date(ms);
+    d.setSeconds(0, 0);
+    d.setMinutes(d.getMinutes() - (d.getMinutes() % 15));
+    return d.getTime();
+  }
 
   function meanSd(vals) {
-    const n = vals.length;
+    const a = vals.filter(v => typeof v === "number" && Number.isFinite(v));
+    const n = a.length;
     if (n < 2) return { mean: null, sd: null };
-    const mean = vals.reduce((a, b) => a + b, 0) / n;
-    const varPop = vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / n;
+    const mean = a.reduce((s, v) => s + v, 0) / n;
+    const varPop = a.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n;
     return { mean, sd: Math.sqrt(varPop) };
   }
 
+  function median(vals) {
+    const a = vals.filter(v => typeof v === "number" && Number.isFinite(v)).sort((x, y) => x - y);
+    const n = a.length;
+    if (!n) return null;
+    const mid = Math.floor(n / 2);
+    return (n % 2) ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  }
+
+  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+  // low=blue, high=red
+  function blueToRed(v, vMin, vMax) {
+    if (typeof v !== "number" || vMin == null || vMax == null || vMax === vMin) return "#888";
+    const f = clamp01((v - vMin) / (vMax - vMin));
+    const r = Math.round(255 * f);
+    const g = 0;
+    const b = Math.round(255 * (1 - f));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  // ---- OUTLIER FILTERING (temp + RH + q) ----
   function filterOutliersByStd(features) {
     const temps = [];
     const hums = [];
@@ -152,7 +190,6 @@
 
     for (const f of features) {
       const p = f.properties || {};
-
       const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
       const h = (typeof p.humidity === "number") ? p.humidity : null;
       const pHpa = inHgToHpa(p.baromin);
@@ -193,59 +230,49 @@
     });
   }
 
-  // ---- RANGES for max contrast ----
+  // ---- MEDIAN-CENTERED RANGES ----
   let tempMin=null, tempMax=null, humMin=null, humMax=null, qMin=null, qMax=null;
 
   function computeRanges(features) {
-    tempMin=humMin=qMin= Infinity;
-    tempMax=humMax=qMax= -Infinity;
+    const temps = [];
+    const hums = [];
+    const qs = [];
 
     for (const f of features) {
       const p = f.properties || {};
-      const t = (typeof p.tempf==="number") ? fToC(p.tempf) : null;
-      const h = (typeof p.humidity==="number") ? p.humidity : null;
+      const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
+      const h = (typeof p.humidity === "number") ? p.humidity : null;
       const pHpa = inHgToHpa(p.baromin);
       const q = (typeof t === "number" && typeof h === "number" && typeof pHpa === "number")
         ? specificHumidityGkg(t, h, pHpa)
         : null;
 
-      if (typeof t === "number") { tempMin=Math.min(tempMin,t); tempMax=Math.max(tempMax,t); }
-      if (typeof h === "number") { humMin=Math.min(humMin,h); humMax=Math.max(humMax,h); }
-      if (typeof q === "number") { qMin=Math.min(qMin,q); qMax=Math.max(qMax,q); }
+      if (typeof t === "number") temps.push(t);
+      if (typeof h === "number") hums.push(h);
+      if (typeof q === "number") qs.push(q);
     }
 
-    if (!Number.isFinite(tempMin) || !Number.isFinite(tempMax)) { tempMin=tempMax=null; }
-    if (!Number.isFinite(humMin)  || !Number.isFinite(humMax))  { humMin=humMax=null; }
-    if (!Number.isFinite(qMin)    || !Number.isFinite(qMax))    { qMin=qMax=null; }
+    const tMed = median(temps);
+    const hMed = median(hums);
+    const qMed = median(qs);
+
+    const tHalf = TEMP_RANGE_C / 2;
+    const hHalf = HUM_RANGE_PCT / 2;
+    const qHalf = Q_RANGE_GKG / 2;
+
+    tempMin = (tMed == null) ? null : tMed - tHalf;
+    tempMax = (tMed == null) ? null : tMed + tHalf;
+
+    humMin  = (hMed == null) ? null : hMed - hHalf;
+    humMax  = (hMed == null) ? null : hMed + hHalf;
+
+    qMin    = (qMed == null) ? null : qMed - qHalf;
+    qMax    = (qMed == null) ? null : qMed + qHalf;
   }
 
-  // TEMP: low blue -> high red
-  function tempToColor(t) {
-    if (typeof t!=="number" || tempMin==null || tempMax==null || tempMax===tempMin) return "#888";
-    const f=(t-tempMin)/(tempMax-tempMin);
-    return `rgb(${Math.round(255*f)},0,${Math.round(255*(1-f))})`;
-  }
-
-  // HUMIDITY: low red -> high blue
-  function humidityToColor(h) {
-    if (typeof h!=="number" || humMin==null || humMax==null || humMax===humMin) return "#888";
-    const f=(h-humMin)/(humMax-humMin);
-    return `rgb(${Math.round(255*(1-f))},0,${Math.round(255*f)})`;
-  }
-
-  // SPEC HUM: low blue -> high red
-  function qToColor(q) {
-    if (typeof q!=="number" || qMin==null || qMax==null || qMax===qMin) return "#888";
-    const f=(q-qMin)/(qMax-qMin);
-    return `rgb(${Math.round(255*f)},0,${Math.round(255*(1-f))})`;
-  }
-
-  function floorToQuarterHour(ms) {
-    const d = new Date(ms);
-    d.setSeconds(0, 0);
-    d.setMinutes(d.getMinutes() - (d.getMinutes() % 15));
-    return d.getTime();
-  }
+  function tempToColor(t)     { return blueToRed(t, tempMin, tempMax); }
+  function humidityToColor(h) { return blueToRed(h, humMin, humMax); }
+  function qToColor(q)        { return blueToRed(q, qMin, qMax); }
 
   // ---- Multi-resolution tile fetching ----
   async function fetchFeaturesForGrid(startMs, endMs, { startX, startY, tilesX, tilesY, lod }) {
@@ -271,7 +298,9 @@
   }
 
   async function fetchFeaturesMerged(startMs, endMs) {
+    // central high detail
     const centerReq = { startX: 1879, startY: 1226, tilesX: 1, tilesY: 1, lod: 12 };
+    // wider low detail
     const wideReq   = { startX: 939,  startY: 613,  tilesX: 1, tilesY: 1, lod: 11 };
 
     const [center, wide] = await Promise.all([
@@ -312,10 +341,10 @@
 
       const latest = mostRecentPerStation(bucketPrev.concat(bucketNow), prevStart, end);
 
-      // apply outlier filtering (temp + RH + spec humidity)
+      // outlier filtering first
       const filtered = filterOutliersByStd(latest);
 
-      // compute contrast ranges from filtered set
+      // median-centered ranges next
       computeRanges(filtered);
 
       layer.clearLayers();
@@ -350,7 +379,7 @@
         .bindPopup(
           `<strong>${p.neighborhood ?? f.id}</strong><br>
            Temp: ${t !== null ? t.toFixed(1) : "—"} °C<br>
-           Humidity: ${h !== null ? h : "—"} %<br>
+           Rel. humidity: ${h !== null ? h : "—"} %<br>
            Spec. humidity: ${q !== null ? q.toFixed(1) : "—"} g/kg<br>
            Updated: ${
             p.validTime
