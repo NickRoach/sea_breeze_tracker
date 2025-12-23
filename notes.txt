@@ -1,6 +1,25 @@
-https://api.weather.com/v2/vector-api/products/614/features?x=1879&y=1227&lod=12&apiKey=e1f10a1e78da46f5b10a1e78da96f525&tile-size=512&time=1766398500000-1766399400000:8&time=1766397600000-1766398500000:23&time=1766396700000-1766397600000:38&time=1766395800000-1766396700000
+Map area past hour in 15 minute chunks
+https://api.weather.com/v2/vector-api/products/614/features?x=1879&y=1227&lod=12&apiKey=e1f10a1e78da46f5b10a1e78da96f525&tile-size=512&time=1766398500000-1766399400000:8
 
-Can I request the data from an incomplete 15 minutes?
+Vector API info
+https://api.weather.com/v2/vector-api/products/614/info?apiKey=e1f10a1e78da46f5b10a1e78da96f525&tile-size=512&meta=true
+
+Single station current
+https://api.weather.com/v2/pws/observations/current?apiKey=e1f10a1e78da46f5b10a1e78da96f525&stationId=IMOUNT670&numericPrecision=decimal&format=json&units=m
+
+Single station whole day until now:
+https://api.weather.com/v2/pws/observations/all/1day?apiKey=e1f10a1e78da46f5b10a1e78da96f525&stationId=IMOUNT670&numericPrecision=decimal&format=json&units=m
+
+My backend could request: an area to find out which stations are in the area. Request the full day data for the stations. Use full day data to detect sudden rise in specific or relative humidity, drop in temp
+
+My backend reports to the frontend: station locations, spec. humidity, rel. humidity, temp, airmass boundary detected
+
+Frontend retrieves data in 10 minute intervals
+
+
+
+
+Can I request the data from an incomplete 15 minutes? yes
 
 Controls: earlier, later, temp/humidity
 

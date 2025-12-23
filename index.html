@@ -74,7 +74,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   // ---- MAP ----
-  const map = L.map("map").setView([-33.645239, 150.556535], 10);
+  const map = L.map("map").setView([-33.645239, 150.556535], 9);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "© OpenStreetMap contributors",
@@ -303,19 +303,24 @@ function qToColor(q)         { return redToBlue(q, qMin, qMax); }
     return features;
   }
 
+  const TILE_REQUESTS = [
+  { startX: 1879, startY: 1226, tilesX: 1, tilesY: 1, lod: 12 }, // centre hi-res
+  //{ startX: 939,  startY: 613,  tilesX: 1, tilesY: 1, lod: 11 }, // wider mid-res
+  //{ startX: 469,  startY: 306,  tilesX: 1, tilesY: 1, lod: 10 },
+  { startX: 234,  startY: 152,  tilesX: 2, tilesY: 2, lod: 9 }    // extra low-res corners
+];
+
+
   async function fetchFeaturesMerged(startMs, endMs) {
-    // central high detail
-    const centerReq = { startX: 1879, startY: 1226, tilesX: 1, tilesY: 1, lod: 12 };
-    // wider low detail
-    const wideReq   = { startX: 939,  startY: 613,  tilesX: 1, tilesY: 1, lod: 11 };
+    const tasks = TILE_REQUESTS.map(cfg =>
+      fetchFeaturesForGrid(startMs, endMs, cfg)
+    );
 
-    const [center, wide] = await Promise.all([
-      fetchFeaturesForGrid(startMs, endMs, centerReq),
-      fetchFeaturesForGrid(startMs, endMs, wideReq),
-    ]);
+    const buckets = await Promise.all(tasks);
 
-    return center.concat(wide);
+    return buckets.flat();
   }
+
 
   function mostRecentPerStation(features, startMs, endMs) {
     const byId = new Map();
