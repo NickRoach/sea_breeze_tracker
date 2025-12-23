@@ -172,15 +172,20 @@
 
   function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 
-  // low=blue, high=red
-  function blueToRed(v, vMin, vMax) {
-    if (typeof v !== "number" || vMin == null || vMax == null || vMax === vMin) return "#888";
-    const f = clamp01((v - vMin) / (vMax - vMin));
-    const r = Math.round(255 * f);
-    const g = 0;
-    const b = Math.round(255 * (1 - f));
-    return `rgb(${r},${g},${b})`;
-  }
+// low = blue, high = red (keep for temperature)
+function blueToRed(v, vMin, vMax) {
+  if (typeof v !== "number" || vMin == null || vMax == null || vMax === vMin) return "#888";
+  const f = Math.max(0, Math.min(1, (v - vMin) / (vMax - vMin)));
+  return `rgb(${Math.round(255*f)},0,${Math.round(255*(1-f))})`;
+}
+
+// low = red, high = blue (use for humidity + specific humidity)
+function redToBlue(v, vMin, vMax) {
+  if (typeof v !== "number" || vMin == null || vMax == null || vMax === vMin) return "#888";
+  const f = Math.max(0, Math.min(1, (v - vMin) / (vMax - vMin)));
+  return `rgb(${Math.round(255*(1-f))},0,${Math.round(255*f)})`;
+}
+
 
   // ---- OUTLIER FILTERING (temp + RH + q) ----
   function filterOutliersByStd(features) {
@@ -270,9 +275,10 @@
     qMax    = (qMed == null) ? null : qMed + qHalf;
   }
 
-  function tempToColor(t)     { return blueToRed(t, tempMin, tempMax); }
-  function humidityToColor(h) { return blueToRed(h, humMin, humMax); }
-  function qToColor(q)        { return blueToRed(q, qMin, qMax); }
+  function tempToColor(t)      { return blueToRed(t, tempMin, tempMax); }
+function humidityToColor(h)  { return redToBlue(h, humMin, humMax); }
+function qToColor(q)         { return redToBlue(q, qMin, qMax); }
+
 
   // ---- Multi-resolution tile fetching ----
   async function fetchFeaturesForGrid(startMs, endMs, { startX, startY, tilesX, tilesY, lod }) {
