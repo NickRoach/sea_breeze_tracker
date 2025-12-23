@@ -40,14 +40,35 @@
       color: #fff;
       border-color: #111;
     }
+
+    .spinner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 48px;
+      height: 48px;
+      margin: -24px 0 0 -24px;
+      border: 5px solid rgba(0,0,0,0.15);
+      border-top-color: #111;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      z-index: 2000;
+      pointer-events: none;
+    }
+
+    .spinner.hidden { display: none; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
 
 <div id="map"></div>
+<div id="spinner" class="spinner hidden"></div>
 
 <div id="controls">
-  <button id="humBtn" class="modeBtn selected">Humidity</button>
+  <button id="qBtn" class="modeBtn selected">Spec. humidity</button>
+  <button id="humBtn" class="modeBtn">Humidity</button>
   <button id="tempBtn" class="modeBtn">Temp</button>
 </div>
 
@@ -62,120 +83,161 @@
 
   const layer = L.layerGroup().addTo(map);
 
+  const spinner = document.getElementById("spinner");
+  function showSpinner() { spinner.classList.remove("hidden"); }
+  function hideSpinner() { spinner.classList.add("hidden"); }
+
   const WINDOW_MS = 15 * 60 * 1000;
   const cache = new Map();
 
-  let colorMode = "humidity"; // "humidity" | "temp"
+  let colorMode = "q"; // "q" | "humidity" | "temp"
 
+  const qBtn = document.getElementById("qBtn");
   const humBtn = document.getElementById("humBtn");
   const tempBtn = document.getElementById("tempBtn");
 
   function setMode(mode) {
     colorMode = mode;
+    qBtn.classList.toggle("selected", mode === "q");
     humBtn.classList.toggle("selected", mode === "humidity");
     tempBtn.classList.toggle("selected", mode === "temp");
     loadData();
   }
 
+  qBtn.onclick = () => setMode("q");
   humBtn.onclick = () => setMode("humidity");
   tempBtn.onclick = () => setMode("temp");
 
   function fToC(f) { return (f - 32) * 5 / 9; }
 
+  function inHgToHpa(inHg) {
+    return (typeof inHg === "number") ? inHg * 33.8638866667 : null;
+  }
+
+  function specificHumidityGkg(tempC, rh, pressureHpa) {
+    if (typeof tempC !== "number" || typeof rh !== "number" || typeof pressureHpa !== "number") return null;
+    const es = 6.112 * Math.exp((17.67 * tempC) / (tempC + 243.5)); // hPa
+    const e  = (rh / 100) * es;                                     // hPa
+    const q  = (0.622 * e) / (pressureHpa - 0.378 * e);             // kg/kg
+    return q * 1000; // g/kg
+  }
+
   function getLatLon(f) {
     const c = f?.geometry?.coordinates;
-    if (!Array.isArray(c) || c.length < 2) return null;
-    return [c[1], c[0]];
+    return (Array.isArray(c) && c.length >= 2) ? [c[1], c[0]] : null;
   }
 
   function ageToOpacity(validTimeMs) {
     if (typeof validTimeMs !== "number") return 0;
     const ageMs = Date.now() - validTimeMs;
-    const maxAge = 30 * 60 * 1000; // 30 min
-    const clamped = Math.min(maxAge, Math.max(0, ageMs));
-    return 1 - (clamped / maxAge); // 0 min => 1, 30 min => 0
+    const maxAge = 30 * 60 * 1000;
+    return Math.max(0, 1 - ageMs / maxAge);
   }
 
   // ---- OUTLIER REMOVAL (std dev) ----
-  const OUTLIER_K = 2.5; // keep values within mean ± K*sd
+  const OUTLIER_K = 2.5;
 
   function meanSd(vals) {
     const n = vals.length;
     if (n < 2) return { mean: null, sd: null };
     const mean = vals.reduce((a, b) => a + b, 0) / n;
     const varPop = vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / n;
-    const sd = Math.sqrt(varPop);
-    return { mean, sd };
+    return { mean, sd: Math.sqrt(varPop) };
   }
 
   function filterOutliersByStd(features) {
     const temps = [];
     const hums = [];
+    const qs = [];
 
     for (const f of features) {
       const p = f.properties || {};
-      if (typeof p.tempf === "number") temps.push(fToC(p.tempf));
-      if (typeof p.humidity === "number") hums.push(p.humidity);
+
+      const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
+      const h = (typeof p.humidity === "number") ? p.humidity : null;
+      const pHpa = inHgToHpa(p.baromin);
+      const q = (typeof t === "number" && typeof h === "number" && typeof pHpa === "number")
+        ? specificHumidityGkg(t, h, pHpa)
+        : null;
+
+      if (typeof t === "number") temps.push(t);
+      if (typeof h === "number") hums.push(h);
+      if (typeof q === "number") qs.push(q);
     }
 
     const tStats = meanSd(temps);
     const hStats = meanSd(hums);
+    const qStats = meanSd(qs);
 
     const tLo = (tStats.mean != null && tStats.sd != null) ? tStats.mean - OUTLIER_K * tStats.sd : -Infinity;
     const tHi = (tStats.mean != null && tStats.sd != null) ? tStats.mean + OUTLIER_K * tStats.sd :  Infinity;
+
     const hLo = (hStats.mean != null && hStats.sd != null) ? hStats.mean - OUTLIER_K * hStats.sd : -Infinity;
     const hHi = (hStats.mean != null && hStats.sd != null) ? hStats.mean + OUTLIER_K * hStats.sd :  Infinity;
+
+    const qLo = (qStats.mean != null && qStats.sd != null) ? qStats.mean - OUTLIER_K * qStats.sd : -Infinity;
+    const qHi = (qStats.mean != null && qStats.sd != null) ? qStats.mean + OUTLIER_K * qStats.sd :  Infinity;
 
     return features.filter(f => {
       const p = f.properties || {};
       const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
       const h = (typeof p.humidity === "number") ? p.humidity : null;
-      if (typeof t !== "number" || typeof h !== "number") return false;
-      return (t >= tLo && t <= tHi && h >= hLo && h <= hHi);
+      const pHpa = inHgToHpa(p.baromin);
+      const q = (typeof t === "number" && typeof h === "number" && typeof pHpa === "number")
+        ? specificHumidityGkg(t, h, pHpa)
+        : null;
+
+      if (typeof t !== "number" || typeof h !== "number" || typeof q !== "number") return false;
+
+      return (t >= tLo && t <= tHi) && (h >= hLo && h <= hHi) && (q >= qLo && q <= qHi);
     });
   }
 
-  // dynamic ranges, recomputed each load to maximize contrast
-  let tempMin = null, tempMax = null;
-  let humMin = null, humMax = null;
+  // ---- RANGES for max contrast ----
+  let tempMin=null, tempMax=null, humMin=null, humMax=null, qMin=null, qMax=null;
 
   function computeRanges(features) {
-    tempMin = Infinity; tempMax = -Infinity;
-    humMin = Infinity; humMax = -Infinity;
+    tempMin=humMin=qMin= Infinity;
+    tempMax=humMax=qMax= -Infinity;
 
     for (const f of features) {
       const p = f.properties || {};
-      const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
-      const h = (typeof p.humidity === "number") ? p.humidity : null;
+      const t = (typeof p.tempf==="number") ? fToC(p.tempf) : null;
+      const h = (typeof p.humidity==="number") ? p.humidity : null;
+      const pHpa = inHgToHpa(p.baromin);
+      const q = (typeof t === "number" && typeof h === "number" && typeof pHpa === "number")
+        ? specificHumidityGkg(t, h, pHpa)
+        : null;
 
-      if (typeof t === "number") { tempMin = Math.min(tempMin, t); tempMax = Math.max(tempMax, t); }
-      if (typeof h === "number") { humMin = Math.min(humMin, h); humMax = Math.max(humMax, h); }
+      if (typeof t === "number") { tempMin=Math.min(tempMin,t); tempMax=Math.max(tempMax,t); }
+      if (typeof h === "number") { humMin=Math.min(humMin,h); humMax=Math.max(humMax,h); }
+      if (typeof q === "number") { qMin=Math.min(qMin,q); qMax=Math.max(qMax,q); }
     }
 
-    if (!Number.isFinite(tempMin) || !Number.isFinite(tempMax)) { tempMin = null; tempMax = null; }
-    if (!Number.isFinite(humMin)  || !Number.isFinite(humMax))  { humMin  = null; humMax  = null; }
+    if (!Number.isFinite(tempMin) || !Number.isFinite(tempMax)) { tempMin=tempMax=null; }
+    if (!Number.isFinite(humMin)  || !Number.isFinite(humMax))  { humMin=humMax=null; }
+    if (!Number.isFinite(qMin)    || !Number.isFinite(qMax))    { qMin=qMax=null; }
   }
 
-  // TEMP: lowest = blue, highest = red
+  // TEMP: low blue -> high red
   function tempToColor(t) {
-    if (typeof t !== "number" || tempMin == null || tempMax == null) return "#888";
-    if (tempMax === tempMin) return "rgb(128,0,128)";
-    const f = (t - tempMin) / (tempMax - tempMin); // 0..1
-    const r = Math.round(255 * f);
-    const g = 0;
-    const b = Math.round(255 * (1 - f));
-    return `rgb(${r},${g},${b})`;
+    if (typeof t!=="number" || tempMin==null || tempMax==null || tempMax===tempMin) return "#888";
+    const f=(t-tempMin)/(tempMax-tempMin);
+    return `rgb(${Math.round(255*f)},0,${Math.round(255*(1-f))})`;
   }
 
-  // HUMIDITY: lowest = red, highest = blue
+  // HUMIDITY: low red -> high blue
   function humidityToColor(h) {
-    if (typeof h !== "number" || humMin == null || humMax == null) return "#888";
-    if (humMax === humMin) return "rgb(128,0,128)";
-    const f = (h - humMin) / (humMax - humMin); // 0..1
-    const r = Math.round(255 * (1 - f));
-    const g = 0;
-    const b = Math.round(255 * f);
-    return `rgb(${r},${g},${b})`;
+    if (typeof h!=="number" || humMin==null || humMax==null || humMax===humMin) return "#888";
+    const f=(h-humMin)/(humMax-humMin);
+    return `rgb(${Math.round(255*(1-f))},0,${Math.round(255*f)})`;
+  }
+
+  // SPEC HUM: low blue -> high red
+  function qToColor(q) {
+    if (typeof q!=="number" || qMin==null || qMax==null || qMax===qMin) return "#888";
+    const f=(q-qMin)/(qMax-qMin);
+    return `rgb(${Math.round(255*f)},0,${Math.round(255*(1-f))})`;
   }
 
   function floorToQuarterHour(ms) {
@@ -209,12 +271,7 @@
   }
 
   async function fetchFeaturesMerged(startMs, endMs) {
-    // central high detail
     const centerReq = { startX: 1879, startY: 1226, tilesX: 1, tilesY: 1, lod: 12 };
-    
-    // wider low detail
-    //const wideReq   = { startX: 469,  startY: 306,  tilesX: 1, tilesY: 1, lod: 10 };
-
     const wideReq   = { startX: 939,  startY: 613,  tilesX: 1, tilesY: 1, lod: 11 };
 
     const [center, wide] = await Promise.all([
@@ -234,10 +291,6 @@
       if (!id || typeof vt !== "number") continue;
       if (vt < startMs || vt > endMs) continue;
 
-      const p = f.properties || {};
-      if (typeof p.humidity !== "number") continue;
-      if (typeof p.tempf !== "number") continue;
-
       const prev = byId.get(id);
       if (!prev || vt > prev.properties.validTime) byId.set(id, f);
     }
@@ -246,67 +299,70 @@
   }
 
   async function loadData() {
-    const start = floorToQuarterHour(Date.now());
-    const end = start + WINDOW_MS;
+    showSpinner();
+    try {
+      const start = floorToQuarterHour(Date.now());
+      const end = start + WINDOW_MS;
+      const prevStart = start - WINDOW_MS;
 
-    const prevStart = start - WINDOW_MS;
-    const prevEnd = start;
+      const [bucketPrev, bucketNow] = await Promise.all([
+        fetchFeaturesMerged(prevStart, start),
+        fetchFeaturesMerged(start, end)
+      ]);
 
-    // fetch both 15-min blocks, each from both resolutions
-    const [bucketPrev, bucketNow] = await Promise.all([
-      fetchFeaturesMerged(prevStart, prevEnd),
-      fetchFeaturesMerged(start, end)
-    ]);
+      const latest = mostRecentPerStation(bucketPrev.concat(bucketNow), prevStart, end);
 
-    // combine and then keep only the most recent per station across 30 mins
-    const combined = bucketPrev.concat(bucketNow);
-    const latest30 = mostRecentPerStation(combined, prevStart, end);
+      // apply outlier filtering (temp + RH + spec humidity)
+      const filtered = filterOutliersByStd(latest);
 
-    // remove outliers using the combined/latest set
-    const features = filterOutliersByStd(latest30);
+      // compute contrast ranges from filtered set
+      computeRanges(filtered);
 
-    computeRanges(features);
+      layer.clearLayers();
 
-    layer.clearLayers();
-    const pts = [];
+      for (const f of filtered) {
+        const ll = getLatLon(f);
+        if (!ll) continue;
 
-    for (const f of features) {
-      const ll = getLatLon(f);
-      if (!ll) continue;
+        const p = f.properties || {};
+        const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
+        const h = (typeof p.humidity === "number") ? p.humidity : null;
+        const pHpa = inHgToHpa(p.baromin);
+        const q = (typeof t === "number" && typeof h === "number" && typeof pHpa === "number")
+          ? specificHumidityGkg(t, h, pHpa)
+          : null;
 
-      const p = f.properties || {};
-      const t = (typeof p.tempf === "number") ? fToC(p.tempf) : null;
-      const h = (typeof p.humidity === "number") ? p.humidity : null;
+        const fillColor =
+          (colorMode === "q") ? qToColor(q) :
+          (colorMode === "humidity") ? humidityToColor(h) :
+          tempToColor(t);
 
-      const fillColor =
-        (colorMode === "humidity") ? humidityToColor(h) : tempToColor(t);
+        const op = ageToOpacity(p.validTime);
+        if (op <= 0) continue;
 
-      const op = ageToOpacity(p.validTime);
-      if (op <= 0) continue;
-
-      L.circleMarker(ll, {
-        radius: 9,
-        fillColor,
-        color: "#000",
-        weight: 0,
-        fillOpacity: op
-      })
-      .bindPopup(
-        `<strong>${p.neighborhood ?? f.id}</strong><br>
-         Temp: ${t !== null ? t.toFixed(1) : "—"} °C<br>
-         Humidity: ${h !== null ? h : "—"} %<br>
-         Updated: ${
-          p.validTime
-            ? new Date(p.validTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-            : "—"
-        }`
-      )
-      .addTo(layer);
-
-      pts.push(ll);
+        L.circleMarker(ll, {
+          radius: 9,
+          fillColor,
+          color: "#000",
+          weight: 0,
+          fillOpacity: op
+        })
+        .bindPopup(
+          `<strong>${p.neighborhood ?? f.id}</strong><br>
+           Temp: ${t !== null ? t.toFixed(1) : "—"} °C<br>
+           Humidity: ${h !== null ? h : "—"} %<br>
+           Spec. humidity: ${q !== null ? q.toFixed(1) : "—"} g/kg<br>
+           Updated: ${
+            p.validTime
+              ? new Date(p.validTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              : "—"
+          }`
+        )
+        .addTo(layer);
+      }
+    } finally {
+      hideSpinner();
     }
-
-    if (pts.length) map.fitBounds(pts, { padding: [-20, -20] });
   }
 
   loadData();
