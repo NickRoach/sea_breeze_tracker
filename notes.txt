@@ -1,2 +1,27 @@
 https://api.weather.com/v2/vector-api/products/614/features?x=1879&y=1227&lod=12&apiKey=e1f10a1e78da46f5b10a1e78da96f525&tile-size=512&time=1766398500000-1766399400000:8&time=1766397600000-1766398500000:23&time=1766396700000-1766397600000:38&time=1766395800000-1766396700000
 
+Can I request the data from an incomplete 15 minutes?
+
+Controls: earlier, later, temp/humidity
+
+Program steps:
+
+Set the zoom and location
+Load map
+Load controls in a disabled state
+Calculate most-recent 5 minute view time
+Call the main function
+
+Main function:
+Disable controls
+Request data to cover at least the half hour prior to the view time
+Throw away not-needed data (keep station ID, location, temp, humidity)
+Throw away entries with no temp and humidity data
+Cache the data from the requests
+Sort the data from youngest to oldest
+Iterate through the data and display a marker for each weather station, up to 30 mins old, indicating age with opacity. Keep track of which stations are already displayed to avoid duplication
+Enable controls
+
+When time changes call the main function again
+
+
