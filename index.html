@@ -76,10 +76,16 @@
   // ---- MAP ----
   const map = L.map("map").setView([-33.645239, 150.556535], 9);
 
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap contributors",
-    maxZoom: 17
-  }).addTo(map);
+  const osm = L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { attribution: "© OpenStreetMap contributors", maxZoom: 17 }
+).addTo(map);
+
+const hillshade = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
+  { attribution: "Tiles © Esri", maxZoom: 17, opacity: 0.2 }
+).addTo(map);
+
 
   const layer = L.layerGroup().addTo(map);
 
