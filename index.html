@@ -58,6 +58,68 @@
 
     .spinner.hidden { display: none; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    .modeBtn{
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.modeBtnHelp{
+  width: 34px;       /* makes ? and ✕ square */
+  padding: 0;
+  font-weight: 700;
+}
+
+/* Modal */
+.modal.hidden { display: none; }
+
+.modal{
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+}
+
+.modalBackdrop{
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+}
+
+.modalCard{
+  position: relative;
+  width: min(640px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+  padding: 14px 14px 10px;
+  font-family: system-ui, sans-serif;
+}
+
+.modalHeader{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.modalHeader h2{
+  margin: 0;
+  font-size: 18px;
+}
+
+.modalBody p{
+  margin: 0 0 10px 0;
+  line-height: 1.35;
+}
+
   </style>
 </head>
 <body>
@@ -69,6 +131,38 @@
   <button id="qBtn" class="modeBtn selected">Specific humidity</button>
   <button id="humBtn" class="modeBtn">Relative humidity</button>
   <button id="tempBtn" class="modeBtn">Temperature</button>
+  <button id="helpBtn" class="modeBtn modeBtnHelp" aria-label="Help">?</button>
+</div>
+<div id="helpModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+  <div class="modalBackdrop" data-close="1"></div>
+  <div class="modalCard">
+    <div class="modalHeader">
+      <h2 id="helpTitle">What is all this?</h2>
+      <button id="helpClose" class="modeBtn modeBtnHelp" aria-label="Close">✕</button>
+    </div>
+    <div class="modalBody" id="helpBody">
+      <p>
+        This map shows live weather-station observations to help visualise the inland push of the sea breeze for the benefit of glider pilots.
+        Each circle is a station. Colour indicates the magnitude of the variable you selected (specific humidity, relative humidity, or temperature).
+      </p>
+      <p>
+        Specific humidity (g/kg) is a measure of how much water vapour is in the air. It’s often a good tracer of marine air
+        because it increases when moist coastal air arrives and is not affected by temperature or pressure changes like relative
+        humidity is.
+      </p>
+      <p>
+        The data comes from the most recent station reading within the last ~30 minutes. Older readings are drawn more faintly:
+        fully opaque means “very recent”, and fading to transparent means “about 30 minutes old”.
+      </p>
+      <p>
+        Colours are scaled around the median value so you can see contrast and boundaries more clearly. Obvious outliers are removed
+        automatically.
+      </p>
+      <p>
+        You can click on a station to see its exact values.
+      </p>
+    </div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -413,7 +507,32 @@ function qToColor(q)         { return redToBlue(q, qMin, qMax); }
   }
 
   loadData();
-</script>
 
+  // ---- HELP MODAL ----
+const helpBtn = document.getElementById("helpBtn");
+const helpModal = document.getElementById("helpModal");
+const helpClose = document.getElementById("helpClose");
+
+console.log("helpBtn?", !!helpBtn, "helpModal?", !!helpModal, "helpClose?", !!helpClose);
+
+function openHelp() {
+  console.log("openHelp()");
+  helpModal.classList.remove("hidden");
+}
+
+function closeHelp() {
+  console.log("closeHelp()");
+  helpModal.classList.add("hidden");
+}
+
+helpBtn.addEventListener("click", openHelp);
+helpClose.addEventListener("click", closeHelp);
+
+// click on backdrop closes (you used data-close="1")
+helpModal.addEventListener("click", (e) => {
+  if (e.target?.dataset?.close) closeHelp();
+});
+
+</script>
 </body>
 </html>
